@@ -28,8 +28,6 @@ on:
 jobs:
   build:
     runs-on: macos-latest
-    env:
-      AUTH_KEY_PATH: ~/private_keys/AuthKey_${{ inputs.asc_key_id }}.p8
     steps:
       - uses: actions/checkout@v4
 
@@ -40,9 +38,11 @@ jobs:
 
       - name: Setup ASC API Key
         run: |
-          mkdir -p ~/private_keys
-          echo "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" | base64 --decode > $AUTH_KEY_PATH
-          chmod 600 $AUTH_KEY_PATH
+          export AUTH_KEY_PATH="$HOME/private_keys/AuthKey_${{ inputs.asc_key_id }}.p8"
+          echo "AUTH_KEY_PATH=$AUTH_KEY_PATH" >> $GITHUB_ENV
+          mkdir -p "$HOME/private_keys"
+          echo "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" | base64 --decode > "$AUTH_KEY_PATH"
+          chmod 600 "$AUTH_KEY_PATH"
 
       - name: Install ASC CLI
         run: |
@@ -157,4 +157,4 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf ~/private_keys
+        run: rm -rf "$HOME/private_keys"
