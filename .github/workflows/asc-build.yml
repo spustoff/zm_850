@@ -39,6 +39,7 @@ jobs:
       - name: Configure ASC Auth
         run: |
           echo "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" | base64 --decode > /tmp/AuthKey.p8
+          chmod 600 /tmp/AuthKey.p8
           asc auth login \
             --name "CI" \
             --key-id "${{ inputs.asc_key_id }}" \
