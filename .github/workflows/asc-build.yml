@@ -113,7 +113,7 @@ jobs:
             CODE_SIGN_STYLE=Automatic \
             $EXTRA_ARGS
 
-      - name: Export & Upload to App Store Connect
+      - name: Export IPA
         run: |
           TEAM_ENTRY=""
           if [ -n "${{ inputs.team_id }}" ]; then
@@ -126,7 +126,7 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>method</key>
-            <string>app-store-connect</string>
+            <string>app-store</string>
             <key>signingStyle</key>
             <string>automatic</string>
             <key>uploadSymbols</key>
@@ -143,6 +143,41 @@ jobs:
             -authenticationKeyPath $AUTH_KEY_PATH \
             -authenticationKeyID "${{ inputs.asc_key_id }}" \
             -authenticationKeyIssuerID "${{ inputs.asc_issuer_id }}"
+
+      - name: Upload to App Store Connect
+        run: |
+          IPA_PATH=$(find build/export -name "*.ipa" | head -1)
+          if [ -z "$IPA_PATH" ]; then
+            echo "ERROR: No IPA found in build/export"
+            exit 1
+          fi
+          echo "Found IPA: $IPA_PATH"
+          echo "Uploading to App Store Connect via Transporter..."
+          TRANSPORTER_PATH="/Applications/Xcode.app/Contents/SharedFrameworks/ContentDeliveryServices.framework/Versions/A/itms/bin/iTMSTransporter"
+          if [ ! -f "$TRANSPORTER_PATH" ]; then
+            TRANSPORTER_PATH=$(find /Applications/Xcode*.app -name "iTMSTransporter" -type f 2>/dev/null | head -1)
+          fi
+          if [ -n "$TRANSPORTER_PATH" ] && [ -f "$TRANSPORTER_PATH" ]; then
+            "$TRANSPORTER_PATH" -m upload \
+              -f "$IPA_PATH" \
+              -jwt "$AUTH_KEY_PATH" \
+              -k "${{ inputs.asc_key_id }}" \
+              -i "${{ inputs.asc_issuer_id }}" \
+              -v informational || echo "Transporter failed, trying altool..."
+          fi
+          if [ ! -f "build/upload_success" ]; then
+            echo "Using altool as fallback..."
+            for attempt in 1 2 3; do
+              echo "Attempt $attempt..."
+              xcrun altool --upload-app \
+                -f "$IPA_PATH" \
+                --type ios \
+                --apiKey "${{ inputs.asc_key_id }}" \
+                --apiIssuer "${{ inputs.asc_issuer_id }}" && break
+              echo "Attempt $attempt failed, waiting 30s..."
+              sleep 30
+            done
+          fi
 
       - name: Cleanup
         if: always()
