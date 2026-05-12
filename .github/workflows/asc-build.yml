@@ -1,0 +1,184 @@
+name: ASC Build & Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: 'Bundle ID'
+        required: true
+        default: 'asopro.test'
+      build_type:
+        description: 'Build type (testflight or appstore)'
+        required: true
+        default: 'appstore'
+      version:
+        description: 'Version string'
+        required: true
+        default: '1.0'
+      asc_key_id:
+        description: 'ASC API Key ID'
+        required: true
+      asc_issuer_id:
+        description: 'ASC Issuer ID'
+        required: true
+      team_id:
+        description: 'Apple Developer Team ID'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Setup ASC API Key
+        run: |
+          export AUTH_KEY_PATH="$HOME/private_keys/AuthKey_${{ inputs.asc_key_id }}.p8"
+          echo "AUTH_KEY_PATH=$AUTH_KEY_PATH" >> $GITHUB_ENV
+          mkdir -p "$HOME/private_keys"
+          echo "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" | base64 --decode > "$AUTH_KEY_PATH"
+          chmod 600 "$AUTH_KEY_PATH"
+
+      - name: Install ASC CLI
+        run: |
+          curl -fsSL https://asccli.sh/install | bash || true
+          if command -v asc &> /dev/null; then
+            asc auth login \
+              --name "CI" \
+              --key-id "${{ inputs.asc_key_id }}" \
+              --issuer-id "${{ inputs.asc_issuer_id }}" \
+              --private-key $AUTH_KEY_PATH \
+              --bypass-keychain
+          fi
+
+      - name: Install CocoaPods (if needed)
+        run: |
+          if [ -f "Podfile" ]; then
+            echo "Podfile found, installing CocoaPods dependencies..."
+            gem install cocoapods --no-document || true
+            pod install --repo-update
+          else
+            echo "No Podfile found, skipping CocoaPods."
+          fi
+
+      - name: Detect project structure
+        id: detect
+        run: |
+          if ls *.xcworkspace 1>/dev/null 2>&1; then
+            WS=$(ls -d *.xcworkspace | head -1)
+            echo "workspace=$WS" >> $GITHUB_OUTPUT
+            echo "build_flag=-workspace $WS" >> $GITHUB_OUTPUT
+            SCHEME=$(xcodebuild -workspace "$WS" -list -json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('workspace',{}).get('schemes',[''])[0])" 2>/dev/null || echo "")
+          elif ls *.xcodeproj 1>/dev/null 2>&1; then
+            PROJ=$(ls -d *.xcodeproj | head -1)
+            echo "project=$PROJ" >> $GITHUB_OUTPUT
+            echo "build_flag=-project $PROJ" >> $GITHUB_OUTPUT
+            SCHEME=$(xcodebuild -project "$PROJ" -list -json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('project',{}).get('schemes',[''])[0])" 2>/dev/null || echo "")
+          fi
+          echo "scheme=$SCHEME" >> $GITHUB_OUTPUT
+
+      - name: Resolve SPM dependencies
+        run: |
+          echo "Resolving Swift Package Manager dependencies..."
+          xcodebuild -resolvePackageDependencies \
+            ${{ steps.detect.outputs.build_flag }} \
+            -scheme "${{ steps.detect.outputs.scheme }}" \
+            -authenticationKeyPath $AUTH_KEY_PATH \
+            -authenticationKeyID "${{ inputs.asc_key_id }}" \
+            -authenticationKeyIssuerID "${{ inputs.asc_issuer_id }}" || true
+
+      - name: Build Archive
+        run: |
+          EXTRA_ARGS=""
+          if [ -n "${{ inputs.team_id }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS DEVELOPMENT_TEAM=${{ inputs.team_id }}"
+          fi
+          if [ -n "${{ inputs.bundle_id }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS PRODUCT_BUNDLE_IDENTIFIER=${{ inputs.bundle_id }}"
+          fi
+          xcodebuild archive \
+            ${{ steps.detect.outputs.build_flag }} \
+            -scheme "${{ steps.detect.outputs.scheme }}" \
+            -archivePath build/App.xcarchive \
+            -destination "generic/platform=iOS" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath $AUTH_KEY_PATH \
+            -authenticationKeyID "${{ inputs.asc_key_id }}" \
+            -authenticationKeyIssuerID "${{ inputs.asc_issuer_id }}" \
+            CODE_SIGN_STYLE=Automatic \
+            $EXTRA_ARGS
+
+      - name: Export IPA
+        run: |
+          TEAM_ENTRY=""
+          if [ -n "${{ inputs.team_id }}" ]; then
+            TEAM_ENTRY="<key>teamID</key>
+            <string>${{ inputs.team_id }}</string>"
+          fi
+          cat > ExportOptions.plist << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+            <key>uploadSymbols</key>
+            <true/>
+            $TEAM_ENTRY
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath build/App.xcarchive \
+            -exportPath build/export \
+            -exportOptionsPlist ExportOptions.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath $AUTH_KEY_PATH \
+            -authenticationKeyID "${{ inputs.asc_key_id }}" \
+            -authenticationKeyIssuerID "${{ inputs.asc_issuer_id }}"
+
+      - name: Upload to App Store Connect
+        run: |
+          IPA_PATH=$(find build/export -name "*.ipa" | head -1)
+          if [ -z "$IPA_PATH" ]; then
+            echo "ERROR: No IPA found in build/export"
+            exit 1
+          fi
+          echo "Found IPA: $IPA_PATH"
+          echo "Uploading to App Store Connect via Transporter..."
+          TRANSPORTER_PATH="/Applications/Xcode.app/Contents/SharedFrameworks/ContentDeliveryServices.framework/Versions/A/itms/bin/iTMSTransporter"
+          if [ ! -f "$TRANSPORTER_PATH" ]; then
+            TRANSPORTER_PATH=$(find /Applications/Xcode*.app -name "iTMSTransporter" -type f 2>/dev/null | head -1)
+          fi
+          if [ -n "$TRANSPORTER_PATH" ] && [ -f "$TRANSPORTER_PATH" ]; then
+            "$TRANSPORTER_PATH" -m upload \
+              -f "$IPA_PATH" \
+              -jwt "$AUTH_KEY_PATH" \
+              -k "${{ inputs.asc_key_id }}" \
+              -i "${{ inputs.asc_issuer_id }}" \
+              -v informational || echo "Transporter failed, trying altool..."
+          fi
+          if [ ! -f "build/upload_success" ]; then
+            echo "Using altool as fallback..."
+            for attempt in 1 2 3; do
+              echo "Attempt $attempt..."
+              xcrun altool --upload-app \
+                -f "$IPA_PATH" \
+                --type ios \
+                --apiKey "${{ inputs.asc_key_id }}" \
+                --apiIssuer "${{ inputs.asc_issuer_id }}" && break
+              echo "Attempt $attempt failed, waiting 30s..."
+              sleep 30
+            done
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$HOME/private_keys"
