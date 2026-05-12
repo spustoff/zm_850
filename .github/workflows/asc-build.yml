@@ -1,0 +1,93 @@
+name: ASC Build & Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: 'Bundle ID'
+        required: true
+        default: 'asopro.test'
+      build_type:
+        description: 'Build type (testflight or appstore)'
+        required: true
+        default: 'appstore'
+      version:
+        description: 'Version string'
+        required: true
+        default: '1.0'
+      asc_key_id:
+        description: 'ASC API Key ID'
+        required: true
+      asc_issuer_id:
+        description: 'ASC Issuer ID'
+        required: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install ASC CLI
+        run: |
+          curl -fsSL https://asccli.sh/install | bash
+
+      - name: Configure ASC Auth
+        run: |
+          asc auth login \
+            --name "CI" \
+            --key-id "${{ inputs.asc_key_id }}" \
+            --issuer-id "${{ inputs.asc_issuer_id }}" \
+            --private-key-base64 "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" \
+            --bypass-keychain
+
+      - name: Resolve Xcode project
+        id: resolve
+        run: |
+          if [ -f "*.xcworkspace" ]; then
+            echo "workspace=$(ls *.xcworkspace | head -1)" >> $GITHUB_OUTPUT
+          elif [ -f "*.xcodeproj" ]; then
+            echo "project=$(ls *.xcodeproj | head -1)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Archive
+        run: |
+          SCHEME=$(xcodebuild -list -json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('project',d.get('workspace',{})).get('schemes',[''])[0])")
+          xcodebuild archive \
+            -scheme "$SCHEME" \
+            -archivePath build/App.xcarchive \
+            -destination "generic/platform=iOS" \
+            -allowProvisioningUpdates \
+            CODE_SIGNING_ALLOWED=YES
+
+      - name: Export IPA
+        run: |
+          cat > ExportOptions.plist << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store</string>
+            <key>destination</key>
+            <string>upload</string>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath build/App.xcarchive \
+            -exportPath build/export \
+            -exportOptionsPlist ExportOptions.plist
+
+      - name: Upload to App Store Connect
+        run: |
+          IPA_PATH=$(find build/export -name "*.ipa" | head -1)
+          if [ "${{ inputs.build_type }}" = "testflight" ]; then
+            asc builds upload --app "${{ inputs.bundle_id }}" --ipa "$IPA_PATH"
+          else
+            asc publish appstore --app "${{ inputs.bundle_id }}" --ipa "$IPA_PATH" --version "${{ inputs.version }}" --submit --confirm
+          fi
