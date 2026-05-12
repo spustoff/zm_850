@@ -94,9 +94,12 @@ jobs:
 
       - name: Build Archive
         run: |
-          TEAM_ARGS=""
+          EXTRA_ARGS=""
           if [ -n "${{ inputs.team_id }}" ]; then
-            TEAM_ARGS="DEVELOPMENT_TEAM=${{ inputs.team_id }}"
+            EXTRA_ARGS="$EXTRA_ARGS DEVELOPMENT_TEAM=${{ inputs.team_id }}"
+          fi
+          if [ -n "${{ inputs.bundle_id }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS PRODUCT_BUNDLE_IDENTIFIER=${{ inputs.bundle_id }}"
           fi
           xcodebuild archive \
             ${{ steps.detect.outputs.build_flag }} \
@@ -108,7 +111,7 @@ jobs:
             -authenticationKeyID "${{ inputs.asc_key_id }}" \
             -authenticationKeyIssuerID "${{ inputs.asc_issuer_id }}" \
             CODE_SIGN_STYLE=Automatic \
-            $TEAM_ARGS
+            $EXTRA_ARGS
 
       - name: Export IPA
         run: |
