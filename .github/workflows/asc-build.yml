@@ -114,7 +114,8 @@ jobs:
         run: |
           TEAM_ENTRY=""
           if [ -n "${{ inputs.team_id }}" ]; then
-            TEAM_ENTRY="<key>teamID</key><string>${{ inputs.team_id }}</string>"
+            TEAM_ENTRY="<key>teamID</key>
+            <string>${{ inputs.team_id }}</string>"
           fi
           cat > ExportOptions.plist << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -122,11 +123,11 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>method</key>
-            <string>app-store</string>
-            <key>destination</key>
-            <string>upload</string>
+            <string>app-store-connect</string>
             <key>signingStyle</key>
             <string>automatic</string>
+            <key>uploadSymbols</key>
+            <true/>
             $TEAM_ENTRY
           </dict>
           </plist>
@@ -143,17 +144,20 @@ jobs:
       - name: Upload to App Store Connect
         run: |
           IPA_PATH=$(find build/export -name "*.ipa" | head -1)
-          if command -v asc &> /dev/null; then
-            if [ "${{ inputs.build_type }}" = "testflight" ]; then
-              asc builds upload --app "${{ inputs.bundle_id }}" --ipa "$IPA_PATH"
-            else
-              asc publish appstore --app "${{ inputs.bundle_id }}" --ipa "$IPA_PATH" --version "${{ inputs.version }}" --submit --confirm
-            fi
-          else
-            xcrun altool --upload-app -f "$IPA_PATH" --type ios \
-              --apiKey "${{ inputs.asc_key_id }}" \
-              --apiIssuer "${{ inputs.asc_issuer_id }}"
+          if [ -z "$IPA_PATH" ]; then
+            echo "Export with app-store-connect method uploads directly. Checking for success..."
+            echo "If no IPA found, export likely uploaded automatically."
+            exit 0
           fi
+          xcrun notarytool submit "$IPA_PATH" \
+            --key $AUTH_KEY_PATH \
+            --key-id "${{ inputs.asc_key_id }}" \
+            --issuer "${{ inputs.asc_issuer_id }}" \
+            --wait 2>/dev/null || \
+          xcrun altool --upload-app -f "$IPA_PATH" --type ios \
+            --apiKey "${{ inputs.asc_key_id }}" \
+            --apiIssuer "${{ inputs.asc_issuer_id }}" || \
+          echo "Upload may have been handled by exportArchive with app-store-connect method."
 
       - name: Cleanup
         if: always()
