@@ -9,11 +9,11 @@ on:
       build_type:
         description: 'Build type (testflight or appstore)'
         required: true
-        default: 'appstore'
+        default: 'testflight'
       version:
         description: 'Version string'
         required: true
-        default: '1.0'
+        default: '1.0.0'
       asc_key_id:
         description: 'ASC API Key ID'
         required: true
@@ -152,32 +152,18 @@ jobs:
             exit 1
           fi
           echo "Found IPA: $IPA_PATH"
-          echo "Uploading to App Store Connect via Transporter..."
-          TRANSPORTER_PATH="/Applications/Xcode.app/Contents/SharedFrameworks/ContentDeliveryServices.framework/Versions/A/itms/bin/iTMSTransporter"
-          if [ ! -f "$TRANSPORTER_PATH" ]; then
-            TRANSPORTER_PATH=$(find /Applications/Xcode*.app -name "iTMSTransporter" -type f 2>/dev/null | head -1)
-          fi
-          if [ -n "$TRANSPORTER_PATH" ] && [ -f "$TRANSPORTER_PATH" ]; then
-            "$TRANSPORTER_PATH" -m upload \
+          for attempt in 1 2 3; do
+            echo "Upload attempt $attempt..."
+            xcrun altool --upload-app \
               -f "$IPA_PATH" \
-              -jwt "$AUTH_KEY_PATH" \
-              -k "${{ inputs.asc_key_id }}" \
-              -i "${{ inputs.asc_issuer_id }}" \
-              -v informational || echo "Transporter failed, trying altool..."
-          fi
-          if [ ! -f "build/upload_success" ]; then
-            echo "Using altool as fallback..."
-            for attempt in 1 2 3; do
-              echo "Attempt $attempt..."
-              xcrun altool --upload-app \
-                -f "$IPA_PATH" \
-                --type ios \
-                --apiKey "${{ inputs.asc_key_id }}" \
-                --apiIssuer "${{ inputs.asc_issuer_id }}" && break
-              echo "Attempt $attempt failed, waiting 30s..."
-              sleep 30
-            done
-          fi
+              --type ios \
+              --apiKey "${{ inputs.asc_key_id }}" \
+              --apiIssuer "${{ inputs.asc_issuer_id }}" && exit 0
+            echo "Attempt $attempt failed, waiting 30s..."
+            sleep 30
+          done
+          echo "All upload attempts failed"
+          exit 1
 
       - name: Cleanup
         if: always()
