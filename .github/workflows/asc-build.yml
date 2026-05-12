@@ -38,12 +38,14 @@ jobs:
 
       - name: Configure ASC Auth
         run: |
+          echo "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" | base64 --decode > /tmp/AuthKey.p8
           asc auth login \
             --name "CI" \
             --key-id "${{ inputs.asc_key_id }}" \
             --issuer-id "${{ inputs.asc_issuer_id }}" \
-            --private-key-base64 "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" \
+            --private-key /tmp/AuthKey.p8 \
             --bypass-keychain
+          rm -f /tmp/AuthKey.p8
 
       - name: Resolve Xcode project
         id: resolve
